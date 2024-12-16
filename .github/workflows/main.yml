@@ -87,7 +87,6 @@ jobs:
           service: ${{ env.ECS_SERVICE }}
           cluster: ${{ env.ECS_CLUSTER }}
           wait-for-service-stability: true
-Ha
       - name: Notify Slack for Failure
         if: failure()
         uses: rtCamp/action-slack-notify@v2.1.2
