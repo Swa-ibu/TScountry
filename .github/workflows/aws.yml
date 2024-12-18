@@ -1,0 +1,115 @@
+name: Deploy to Amazon ECS on Beta
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  id-token: write # This is required for requesting the JWT
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: polaris-ecs-beta
+  ECS_SERVICE: polaris-beta-service
+  ECS_CLUSTER: polaris-beta-cluster
+  CONTAINER_NAME: "polaris"
+  CHECKOUT_CONTAINER_NAME: "polaris-checkout"
+
+jobs:
+  deploy:
+    name: Deploy to Server
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@0e613a0980cbf65ed5b322eb7a1e075d28913a83
+        with:
+          role-to-assume: arn:aws:iam::658707737044:role/GithubAccessEcr
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Notify Slack
+        if: always()
+        uses: rtCamp/action-slack-notify@v2.1.2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_MESSAGE: "Deployment Pipeline to Beat has been started."
+          SLACK_COLOR: "#3278BD"
+          SLACK_USERNAME: Github Actions
+          SLACK_ICON_EMOJI: ":github:"
+          SLACK_TITLE: "Deployment to New Beta ECS Cluster"
+          SLACK_FOOTER: "Powered by github actions"
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@62f4f872db3836360b72999f4b87f1ff13310f3a
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Build a docker container and
+          # push it to ECR so that it can
+          # be deployed to ECS.
+
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG . --build-arg SALEOR_API_URL=https://phoenix.sevencells.com/graphql/ --build-arg CHECKOUT_APP_URL=https://beta.sevencells.com:3001 --build-arg CHECKOUT_STOREFRONT_URL=https://beta.sevencells.com:3001/checkout-spa/ --build-arg META_PIXEL_ID=1120620615585544 --build-arg HEAP_PROJECT_ID=2445963736 --build-arg NMI_API_KEY=6A5RPF-47E9Rh-4gV7mQ-3nep68 --build-arg OMNISEND_API_KEY=64ad4a37564d96697ae1b7c1-i4DQkeijC1hpTe0aMl84VNpJyAvz0BdExpskSxPDXvZISaSv8W --build-arg NEXT_PUBLIC_INTEGRATOR_URL=https://integrator.sevencells.com --build-arg GOOGLE_TAG_ID=G-6JNZXGTG8P --build-arg YOTPO_STORE_ID=IcBFGqdOPGcjPu6xXQHMAujsjbjiLuFupYhOm0sM --build-arg YOTPO_SECRET_KEY=65qSassGovfq3fyoB44Pv0DyKKbd161KUwOkplaT --build-arg YOTPO_UTOKEN=1dg01kIGnfwcSg6ShhFWQahBhYOwRqJBCwC8X2YB --build-arg OMNISEND_BRAND_ID=64ad4a37564d96697ae1b7c1 --build-arg REDDIT_PIXEL_ID=a2_fzvg2w9n2atm
+
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+      - name: Download task definition
+        run: |
+          aws ecs describe-task-definition --task-definition polaris-production-task-definition --query taskDefinition > task-definition.json
+
+      - name: Fill in the new image ID in the StoreFront Amazon ECS task definition
+        id: polaris-task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@c804dfbdd57f713b6c079302a4c01db7017a36fc
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.build-image.outputs.image }}
+
+      - name: Fill in the new image ID in the Checkout Container Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@c804dfbdd57f713b6c079302a4c01db7017a36fc
+        with:
+          task-definition: ${{ steps.polaris-task-def.outputs.task-definition }}
+          container-name: ${{ env.CHECKOUT_CONTAINER_NAME }}
+          image: ${{ steps.build-image.outputs.image }}
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@df9643053eda01f169e64a0e60233aacca83799a
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+          
+      - name: Notify Slack for Failure
+        if: failure()
+        uses: rtCamp/action-slack-notify@v2.1.2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_MESSAGE: "*Deployment Pipeline to ECS Beta Polaris has failed*"
+          SLACK_COLOR: "#F44336"
+          SLACK_USERNAME: Github Actions
+          SLACK_ICON_EMOJI: ":github:"
+          SLACK_TITLE: "Deployment to ECS Beta Failed"
+          SLACK_FOOTER: "Powered by github actions"
+
+      - name: Notify Slack for Success
+        if: success()
+        uses: rtCamp/action-slack-notify@v2.1.2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_MESSAGE: "*Deployment has been successfully completed to ECS Polaris Beta.*"
+          SLACK_COLOR: "#38761D"
+          SLACK_USERNAME: Github Actions
+          SLACK_ICON_EMOJI: ":github:"
+          SLACK_TITLE: "Deployment to ECS Beta Successful"
+          SLACK_FOOTER: "Powered by github actions"
